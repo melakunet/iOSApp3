@@ -2,10 +2,8 @@
 //  ContentView.swift
 //  iOSApp3 Watch App
 //
-//  Purpose: Temporary root view for Phase 1.
-//           Displays the app name and the current HealthKit
-//           authorization status so we can confirm the permission
-//           flow works on a real device or simulator.
+//  Purpose: Root view for StepRecovery. Shows the app logo, name,
+//           and current HealthKit authorization status.
 //
 //  Created by Etefworkie Melaku
 //
@@ -25,6 +23,12 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+
+            // App logo from Assets.xcassets/steprecovery_sr_logo.imageset
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 60, height: 60)
 
             // App name / title
             Text("StepRecovery")

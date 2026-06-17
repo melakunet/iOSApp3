@@ -10,28 +10,33 @@
 //  Created by Etefworkie Melaku
 //
 
-import Combine
+import Combine       // Required for ObservableObject, @Published, and ObjectWillChangePublisher
 import Foundation
 import HealthKit
+
+// MARK: - Private helpers (file-scope, nonisolated)
+
+/// Builds a predicate for HealthKit samples from midnight today to right now.
+/// Defined at file scope (not inside the @MainActor class) so it can safely
+/// be called from HealthKit background-thread callbacks without crossing
+/// the actor boundary.
+private func makeTodayPredicate() -> NSPredicate {
+    // startOfDay gives us midnight in the device's local time zone.
+    let startOfDay = Calendar.current.startOfDay(for: Date())
+    return HKQuery.predicateForSamples(
+        withStart: startOfDay,
+        end: Date(),
+        options: .strictStartDate
+    )
+}
 
 // MARK: - HealthManager
 
 /// Central class for reading HealthKit data.
-///
-/// Swift concurrency note: the project enables SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor,
-/// so this class is implicitly @MainActor-isolated without an explicit annotation.
-/// `objectWillChange` is declared `nonisolated` so that
-/// SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES does not make the
-/// ObservableObject conformance actor-isolated — ObservableObject requires its
-/// publisher to be accessible from any context.
+/// @MainActor ensures every @Published update happens on the main thread,
+/// which is required for driving SwiftUI views safely.
+@MainActor
 final class HealthManager: ObservableObject {
-
-    // MARK: - ObservableObject publisher
-
-    /// Declared nonisolated so InferIsolatedConformances does not restrict
-    /// this publisher to the main actor. @Published properties call .send()
-    /// on this publisher; Combine's ObservableObjectPublisher is thread-safe.
-    nonisolated let objectWillChange = ObservableObjectPublisher()
 
     // MARK: - Shared HealthKit store
 
@@ -100,26 +105,14 @@ final class HealthManager: ObservableObject {
     /// Creates one statistics query (immediate fetch) and one observer query
     /// (fires whenever new data arrives) for the given quantity type.
     ///
-    /// HKQuery callbacks run on a HealthKit background thread, NOT the main actor.
-    /// To avoid crossing the actor boundary inside callbacks we:
-    ///   • Capture `store` as a local constant before the closure (HKHealthStore is Sendable).
-    ///   • Compute the today-predicate inline using only thread-safe Foundation calls.
-    ///   • Use `Task { @MainActor in }` to hop back for @Published mutations.
+    /// HKQuery callbacks run on a HealthKit background thread, not the main actor.
+    /// We capture `store` as a local constant before the closure (HKHealthStore
+    /// is Sendable) and use the file-scope `makeTodayPredicate()` function so
+    /// no actor-isolated state is accessed from the background thread.
     private func setupObserver(for type: HKQuantityType, unit: HKUnit) {
 
-        // Capture the store locally — it is a constant and HKHealthStore is Sendable.
+        // Capture the store locally so it is accessible inside the non-isolated closure.
         let capturedStore = store
-
-        // Local helper: builds a predicate for samples since midnight today.
-        // Uses only Calendar/Date which are safe to call from any thread.
-        func makeTodayPredicate() -> NSPredicate {
-            let startOfDay = Calendar.current.startOfDay(for: Date())
-            return HKQuery.predicateForSamples(
-                withStart: startOfDay,
-                end: Date(),
-                options: .strictStartDate
-            )
-        }
 
         // --- 1. Immediate statistics query (gives us today's current total) ---
         let statsQuery = HKStatisticsQuery(
@@ -150,9 +143,10 @@ final class HealthManager: ObservableObject {
                 return
             }
             // Re-run a fresh statistics query to get the updated total.
+            // makeTodayPredicate() is file-scope and nonisolated — safe to call here.
             let refreshQuery = HKStatisticsQuery(
                 quantityType: type,
-                quantitySamplePredicate: makeTodayPredicate(), // safe: no actor state
+                quantitySamplePredicate: makeTodayPredicate(),
                 options: .cumulativeSum
             ) { [weak self] _, statistics, _ in
                 let value = statistics?.sumQuantity()?.doubleValue(for: unit) ?? 0
@@ -162,7 +156,7 @@ final class HealthManager: ObservableObject {
                 // Tell HealthKit we finished processing this update.
                 completionHandler()
             }
-            capturedStore.execute(refreshQuery)  // safe: captured constant
+            capturedStore.execute(refreshQuery)
         }
         capturedStore.execute(observerQuery)
     }

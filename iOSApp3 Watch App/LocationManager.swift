@@ -16,23 +16,13 @@ import CoreLocation
 // MARK: - LocationManager
 
 /// Handles one-shot location capture and reverse geocoding.
-/// Uses CLLocationManagerDelegate callbacks and bridges them back
-/// to async/await via a checked continuation so callers can use `await`.
-///
-/// Swift concurrency note: the project enables SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor,
-/// so members are implicitly @MainActor without an explicit annotation.
-/// `objectWillChange` is declared `nonisolated` to prevent
-/// SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES from restricting the
-/// ObservableObject conformance to the main actor.
+/// @MainActor ensures all @Published mutations happen on the main thread.
+/// Uses CLLocationManagerDelegate callbacks bridged to async/await via a
+/// CheckedContinuation so callers can simply use `await captureOrigin()`.
 /// CLLocationManager delivers delegate callbacks on the main thread by default,
 /// so accessing the continuation from delegate methods is safe.
+@MainActor
 final class LocationManager: NSObject, ObservableObject {
-
-    // MARK: - ObservableObject publisher
-
-    /// Declared nonisolated so InferIsolatedConformances does not restrict
-    /// this publisher to the main actor.
-    nonisolated let objectWillChange = ObservableObjectPublisher()
 
     // MARK: - Core Location objects
 
