@@ -77,6 +77,9 @@ struct RecoveryCoachView: View {
         ScrollView {
             VStack(spacing: 10) {
 
+                // Top spacer reserves room so the pinned logo doesn't overlap content.
+                Spacer().frame(height: 18)
+
                 if progress < 1.0 {
                     // MARK: Under goal — show progress bar + steps remaining
                     VStack(spacing: 8) {
@@ -130,6 +133,15 @@ struct RecoveryCoachView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+        }
+        // SR logo pinned to the top-left corner above the scroll content.
+        .overlay(alignment: .topLeading) {
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .padding(.top, 6)
+                .padding(.leading, 6)
         }
 
         // MARK: - Lifecycle

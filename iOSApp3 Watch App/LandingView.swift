@@ -2,10 +2,10 @@
 //  LandingView.swift
 //  iOSApp3 Watch App
 //
-//  Purpose: Main landing screen shown on app launch. Displays today's calorie
-//           burn with a count-up animation, a protein recovery target, an
-//           animated walking figure, and brief motivational pop-ups when
-//           the step count updates.
+//  Purpose: Welcome screen shown on app launch. Introduces StepRecovery with
+//           an animated walking figure, a brief tagline, and a Get Started
+//           button that jumps straight to the Dashboard tab. Motivational
+//           pop-ups still appear here whenever the step count updates.
 //
 //  Created by Etefworkie Melaku
 //
@@ -14,36 +14,30 @@ import SwiftUI
 
 // MARK: - LandingView
 
-/// The primary screen the user sees when they open StepRecovery.
-/// Reads live HealthKit data from HealthManager and shows motivational
-/// messages managed by MotivationManager.
+/// The welcome screen — the first tab the user sees when they open StepRecovery.
+/// Shows the app name, a brief tagline, and a Get Started button that navigates
+/// directly to the Dashboard. Motivational messages can pop in from the top
+/// while the user lingers here as their step count updates throughout the day.
 struct LandingView: View {
 
     // MARK: - Environment objects
 
-    /// Provides live step count, calorie burn, and flights climbed.
+    /// Provides live step count so motivational pop-ups fire on step updates.
     @EnvironmentObject var healthManager: HealthManager
 
     /// Controls the brief motivational pop-up that slides in from the top.
     @EnvironmentObject var motivationManager: MotivationManager
 
+    // MARK: - Navigation
+
+    /// Bound to ContentView's selectedTab — setting this to 1 jumps the user
+    /// directly to the Dashboard tab when they tap Get Started.
+    @Binding var selectedTab: Int
+
     // MARK: - Local animation state
 
     /// Toggled true on appear so the walking figure starts oscillating immediately.
     @State private var isWalking = false
-
-    /// Animated copy of todayActiveCalories — counts up from 0 on first appear
-    /// so the user watches their burn total reveal itself.
-    @State private var displayedCalories: Double = 0
-
-    // MARK: - Computed properties
-
-    /// Protein recovery target in grams.
-    /// Delegated to RecoveryCalculator so this number stays in sync with
-    /// the Recovery Coach tab — both screens show the same recommendation.
-    private var proteinTarget: Int {
-        RecoveryCalculator.proteinGrams(forCalories: healthManager.todayActiveCalories)
-    }
 
     // MARK: - Body
 
@@ -53,13 +47,13 @@ struct LandingView: View {
         ZStack(alignment: .top) {
 
             // MARK: Main content stack
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
 
-                // Walking figure.
+                // Walking figure bounce animation — the app's signature visual.
                 // The offset oscillates between -4 and +4 pts, mimicking a
-                // gentle bounce. repeatForever + autoreverses loops it endlessly.
+                // gentle step rhythm. repeatForever + autoreverses loops it endlessly.
                 Image(systemName: "figure.walk")
-                    .font(.system(size: 34))
+                    .font(.system(size: 40))
                     .foregroundStyle(.green)
                     .offset(y: isWalking ? -4 : 4)
                     .animation(
@@ -67,24 +61,28 @@ struct LandingView: View {
                         value: isWalking
                     )
 
-                // Calorie burn headline.
-                // numericText() makes the digits roll like a counter as
-                // displayedCalories animates from 0 to the real value.
-                Text("You burned ~\(Int(displayedCalories)) cal today — keep it up!")
-                    .font(.caption2)
-                    .multilineTextAlignment(.center)
-                    .contentTransition(.numericText())
-                    .animation(.easeInOut(duration: 1.5), value: displayedCalories)
+                // App name — establishes brand identity on the welcome screen.
+                Text("StepRecovery")
+                    .font(.headline)
+                    .fontWeight(.bold)
 
-                // Protein target supporting line.
-                // Secondary color keeps it subordinate to the calorie headline.
-                Text("Aim for ~\(proteinTarget)g protein to recover")
+                // One-line tagline describing the app's value proposition.
+                Text("Track steps, burn calories,\nand recover smarter.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+
+                // Get Started — jumps to the Dashboard tab so the user can
+                // see their live metrics without manually swiping.
+                Button("Get Started") {
+                    withAnimation { selectedTab = 1 }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .font(.caption)
+                .fontWeight(.semibold)
             }
-            // Top padding reserves space so main text never hides under the pop-up.
-            .padding(.top, 24)
+            .padding(.top, 20)
             .padding(.horizontal, 8)
 
             // MARK: Motivational pop-up
@@ -108,23 +106,22 @@ struct LandingView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // SR logo pinned to the top-left corner, rendered above all ZStack layers.
+        // Adding the overlay here (not on TabView) guarantees it is always visible.
+        .overlay(alignment: .topLeading) {
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .padding(.top, 6)
+                .padding(.leading, 6)
+        }
 
         // MARK: - Lifecycle
 
         .onAppear {
             // Start the walking-figure oscillation on first render.
             isWalking = true
-
-            // Reveal today's calorie total with a 1.5-second count-up.
-            withAnimation(.easeInOut(duration: 1.5)) {
-                displayedCalories = healthManager.todayActiveCalories
-            }
-        }
-        // Keep the calorie display current as HealthKit delivers live updates.
-        .onChange(of: healthManager.todayActiveCalories) { _, newValue in
-            withAnimation(.easeInOut(duration: 0.8)) {
-                displayedCalories = newValue
-            }
         }
         // Fire a motivational pop-up whenever today's step count increases.
         .onChange(of: healthManager.todaySteps) { _, newSteps in
@@ -137,26 +134,22 @@ struct LandingView: View {
 
 // MARK: - Previews
 
-#Preview("Normal state") {
+#Preview("Welcome screen") {
     let health = HealthManager()
-    health.todayActiveCalories = 312
-    health.todaySteps = 4_820
     let motivation = MotivationManager()
 
-    return LandingView()
+    return LandingView(selectedTab: .constant(0))
         .environmentObject(health)
         .environmentObject(motivation)
 }
 
 #Preview("With pop-up visible") {
     let health = HealthManager()
-    health.todayActiveCalories = 200
-    health.todaySteps = 2_500
     let motivation = MotivationManager()
     // Pre-load a message so the Capsule pop-up is visible without waiting for steps.
     motivation.currentMessage = "Nice — every step counts! (2500 steps)"
 
-    return LandingView()
+    return LandingView(selectedTab: .constant(0))
         .environmentObject(health)
         .environmentObject(motivation)
 }

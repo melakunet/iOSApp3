@@ -17,14 +17,20 @@ import SwiftUI
 /// Root view that hosts the four main tabs.
 ///
 /// Navigation structure:
-///   Tab 1 (top)    → LandingView       – walking animation, calorie summary, pop-ups
-///   Tab 2          → DashboardView     – step hero, flights, calories, Start Walk
-///   Tab 3          → RecoveryCoachView – progress bar, protein guide, recovery tips
-///   Tab 4 (bottom) → HistoryView       – 7-day step and calorie totals, impact estimate
+///   Tab 0 (top)    → LandingView       – welcome screen, Get Started button
+///   Tab 1          → DashboardView     – step hero, flights, calories, Start Walk
+///   Tab 2          → RecoveryCoachView – progress bar, protein guide, recovery tips
+///   Tab 3 (bottom) → HistoryView       – 7-day step and calorie totals, impact estimate
 ///
-/// .verticalPage stacks tabs top-to-bottom so the user scrolls or spins the
-/// Digital Crown to move between screens — the standard watchOS 10+ pattern.
+/// selectedTab is passed as a @Binding to LandingView so the Get Started button
+/// can jump the user straight to the Dashboard without manual swiping.
 struct ContentView: View {
+
+    // MARK: - Tab selection
+
+    /// Tracks the active tab index. LandingView's Get Started button sets this to 1
+    /// (Dashboard) so the user lands on live metrics immediately after the welcome screen.
+    @State private var selectedTab = 0
 
     // MARK: - Body
 
@@ -32,33 +38,27 @@ struct ContentView: View {
         // Each direct child of TabView becomes one swipeable page.
         // EnvironmentObject values injected by iOSApp3App flow down automatically
         // to all tabs without re-passing them here.
-        TabView {
+        TabView(selection: $selectedTab) {
 
-            // Tab 1 — motivational landing with animated walking figure.
-            LandingView()
+            // Tab 0 — welcome screen with animated walking figure and Get Started button.
+            LandingView(selectedTab: $selectedTab)
+                .tag(0)
 
-            // Tab 2 — live fitness metrics and walk-start capture.
+            // Tab 1 — live fitness metrics and walk-start capture.
             DashboardView()
+                .tag(1)
 
-            // Tab 3 — recovery coach: goal progress, protein range, tips, notification.
+            // Tab 2 — recovery coach: goal progress, protein range, tips, notification.
             RecoveryCoachView()
+                .tag(2)
 
-            // Tab 4 — history: real 7-day HealthKit totals and impact estimate.
+            // Tab 3 — history: real 7-day HealthKit totals and impact estimate.
             HistoryView()
+                .tag(3)
         }
         // .verticalPage: pages scroll vertically (Digital Crown or swipe up/down).
         // Introduced in watchOS 10; the standard interaction on Apple Watch.
         .tabViewStyle(.verticalPage)
-        // SR logo pinned to the top-left corner on every tab.
-        // overlay keeps it above the tab content without shifting any layouts.
-        .overlay(alignment: .topLeading) {
-            Image("steprecovery_sr_logo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 20, height: 20)
-                .padding(.top, 6)
-                .padding(.leading, 6)
-        }
     }
 }
 

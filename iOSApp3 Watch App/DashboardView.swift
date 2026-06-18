@@ -56,6 +56,9 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .center, spacing: 10) {
 
+                // Top spacer reserves room so the pinned logo doesn't overlap the hero number.
+                Spacer().frame(height: 18)
+
                 // MARK: Hero step count
                 // Large rounded-design number for fast glanceability on the small
                 // watch face. numericText() makes the digit roll when it changes.
@@ -149,6 +152,16 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+        }
+        // SR logo pinned to the top-left corner above the scroll content.
+        // Placed on the ScrollView itself so it never scrolls away.
+        .overlay(alignment: .topLeading) {
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .padding(.top, 6)
+                .padding(.leading, 6)
         }
 
         // MARK: - Lifecycle

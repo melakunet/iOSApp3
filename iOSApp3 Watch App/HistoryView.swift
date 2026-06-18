@@ -128,6 +128,15 @@ struct HistoryView: View {
                 }
             }
         }
+        // SR logo pinned to the top-left corner above the list content.
+        .overlay(alignment: .topLeading) {
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .padding(.top, 6)
+                .padding(.leading, 6)
+        }
 
         // MARK: - Lifecycle
 
