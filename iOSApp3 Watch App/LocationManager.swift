@@ -2,9 +2,11 @@
 //  LocationManager.swift
 //  iOSApp3 Watch App
 //
-//  Purpose: Captures a single GPS fix at the start of a recovery walk
+//  Purpose: Optionally captures a GPS fix at the start of a recovery walk
 //           and reverse-geocodes it into a human-readable place name
-//           (e.g. "Toronto, ON") so the user can see where they began.
+//           (e.g. "Toronto, ON"). Location is never required — captureOrigin()
+//           always returns cleanly, and startPlaceDescription stays nil if the
+//           user denies access or the fix fails. The session is always recorded.
 //
 //  Created by Etefworkie Melaku
 //
@@ -16,7 +18,7 @@ import MapKit        // Required for MKReverseGeocodingRequest (replaces CLGeoco
 
 // MARK: - LocationManager
 
-/// Handles one-shot location capture and reverse geocoding.
+/// Handles optional one-shot location capture and reverse geocoding.
 /// @MainActor ensures all @Published mutations happen on the main thread.
 /// CLLocationManager delivers delegate callbacks on the main thread by default,
 /// so accessing the async continuation from delegate methods is safe.
@@ -29,9 +31,19 @@ final class LocationManager: NSObject, ObservableObject {
 
     // MARK: - Published properties
 
-    /// Short description of the origin location, e.g. "Toronto, ON".
-    /// Empty string until captureOrigin() succeeds.
-    @Published var startPlaceDescription: String = ""
+    /// Reflects the user's current location permission for this app.
+    /// Updated live from locationManagerDidChangeAuthorization so views
+    /// can react immediately when the user changes the setting.
+    @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
+
+    /// True when the user has granted When In Use (or Always) authorization.
+    /// Views read this to decide whether to show a "Location off" hint.
+    @Published var locationAvailable: Bool = false
+
+    /// City and region of the origin fix once geocoding succeeds, e.g. "Toronto, ON".
+    /// Stays nil if location is off, denied, or the geocoding step fails.
+    /// DashboardView watches this and appends it to the session string when it arrives.
+    @Published var startPlaceDescription: String? = nil
 
     /// Raw coordinate of the origin fix. Nil until a valid fix is obtained.
     @Published var startCoordinate: CLLocationCoordinate2D? = nil
@@ -50,36 +62,54 @@ final class LocationManager: NSObject, ObservableObject {
         locationManager.delegate = self
         // Best accuracy for a single origin fix; battery impact is brief.
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        // Sync published properties with whatever status the OS already holds
+        // so views have the correct state before the first delegate callback.
+        let status = locationManager.authorizationStatus
+        authorizationStatus = status
+        locationAvailable = (status == .authorizedWhenInUse || status == .authorizedAlways)
     }
 
     // MARK: - Public API
 
-    /// Requests When In Use authorization (if not already granted), then
-    /// takes a single location fix and reverse-geocodes it.
-    /// Call this when the user taps "Start Walk".
+    /// Tries to capture a GPS fix and geocode it into startPlaceDescription.
+    ///
+    /// This function ALWAYS returns cleanly — it never blocks a session:
+    ///   • .notDetermined   → asks for permission; delegate will retry if granted.
+    ///   • .authorized*     → fetches a fix; leaves startPlaceDescription nil on failure.
+    ///   • .denied/.restricted → returns immediately; place stays nil.
+    ///
+    /// The place description is reset at the start of every call so stale data
+    /// from a previous session is never shown.
     func captureOrigin() async {
-        let status = locationManager.authorizationStatus
-        if status == .notDetermined {
+        // Clear any place from a previous session before starting a new fix.
+        startPlaceDescription = nil
+        startCoordinate = nil
+
+        switch locationManager.authorizationStatus {
+
+        case .notDetermined:
+            // Show the system permission prompt. The session is already being
+            // recorded by DashboardView with time only. If the user taps Allow,
+            // locationManagerDidChangeAuthorization calls fetchAndGeocode() to
+            // fill in the place after the fact.
             locationManager.requestWhenInUseAuthorization()
-            // Return early to avoid a race where requestLocation() fires before
-            // the OS grants permission and immediately fails with an error.
-            // locationManagerDidChangeAuthorization will call fetchAndGeocode()
-            // once the user responds to the prompt.
-            return
-        }
 
-        guard status == .authorizedWhenInUse || status == .authorizedAlways else {
-            startPlaceDescription = "Location access denied"
-            return
-        }
+        case .authorizedWhenInUse, .authorizedAlways:
+            // Permission is granted — request a one-shot fix and geocode it.
+            // fetchAndGeocode() handles all errors; it never crashes or hangs.
+            await fetchAndGeocode()
 
-        await fetchAndGeocode()
+        default:
+            // Denied or restricted — silently do nothing.
+            // DashboardView is already recording the session with time only.
+            break
+        }
     }
 
     // MARK: - Private helpers
 
-    /// Requests one GPS fix and reverse-geocodes the coordinate into a
-    /// short human-readable string (e.g. "Toronto, ON").
+    /// Requests one GPS fix and reverse-geocodes the coordinate into
+    /// startPlaceDescription. Leaves it nil on any error — never crashes.
     ///
     /// Uses MKReverseGeocodingRequest — the watchOS 26+ replacement for the
     /// deprecated CLGeocoder — bridged to async/await via CheckedContinuation.
@@ -97,7 +127,7 @@ final class LocationManager: NSObject, ObservableObject {
             // MKReverseGeocodingRequest replaces the deprecated CLGeocoder.
             // The failable init returns nil only for an invalid coordinate.
             guard let request = MKReverseGeocodingRequest(location: location) else {
-                startPlaceDescription = "Location unavailable"
+                // Invalid coordinate — leave place nil so the session stays time-only.
                 return
             }
 
@@ -108,26 +138,22 @@ final class LocationManager: NSObject, ObservableObject {
                     if let error {
                         print("Reverse geocoding error: \(error.localizedDescription)")
                     }
-                    // Resume with whatever arrived; nil on error → fallback below.
+                    // Resume with whatever arrived; nil on error → place stays nil.
                     continuation.resume(returning: items)
                 }
             }
 
             // addressRepresentations replaces the deprecated MKPlacemark.placemark on watchOS 26+.
-            // cityWithContext(.automatic) returns a "City, Region" style string automatically
-            // (e.g. "Toronto, ON"), handling disambiguation without manual string building.
+            // cityWithContext(.automatic) returns "City, Region" style automatically.
+            // If geocoding returned nothing, startPlaceDescription simply stays nil.
             if let representations = mapItems?.first?.addressRepresentations {
                 startPlaceDescription = representations.cityWithContext(.automatic)
                     ?? representations.cityName
-                    ?? "Unknown location"
-            } else {
-                startPlaceDescription = "Unknown location"
             }
 
         } catch {
-            // Location or geocoding failed — show a safe fallback, never crash.
+            // Location hardware error or timeout — leave place nil, never crash.
             print("LocationManager error: \(error.localizedDescription)")
-            startPlaceDescription = "Location unavailable"
         }
     }
 }
@@ -140,16 +166,21 @@ final class LocationManager: NSObject, ObservableObject {
 // callbacks on the main thread by default).
 extension LocationManager: @preconcurrency CLLocationManagerDelegate {
 
-    /// Called when the user responds to the permission prompt.
-    /// If access was just granted, kick off the actual location fix.
+    /// Called whenever the user's location permission for this app changes.
+    /// Updates authorizationStatus and locationAvailable so views react in real time.
+    /// If access was just granted (after a .notDetermined tap), fetches a fix now
+    /// so the place can be appended to any session already in progress.
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
-        if status == .authorizedWhenInUse || status == .authorizedAlways {
+        authorizationStatus = status
+        locationAvailable = (status == .authorizedWhenInUse || status == .authorizedAlways)
+
+        if locationAvailable {
+            // Permission was just granted — kick off the fix so the place can
+            // be appended to the session string DashboardView already started.
             Task { await fetchAndGeocode() }
-        } else if status == .denied || status == .restricted {
-            startPlaceDescription = "Location access denied"
         }
-        // .notDetermined: the sheet is still visible — nothing to do yet.
+        // Denied or restricted: locationAvailable = false, place stays nil — no crash.
     }
 
     /// Delivers the one-shot GPS fix to the waiting async continuation.

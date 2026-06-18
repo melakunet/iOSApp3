@@ -3,8 +3,9 @@
 //  iOSApp3 Watch App
 //
 //  Purpose: Fitness summary screen showing today's steps, flights, and active
-//           calories. Lets the user capture their walk's starting location and
-//           persists the last session detail across app relaunches via UserDefaults.
+//           calories. The Start Walk button always records a session — it writes
+//           the start time immediately, then appends a place name if location
+//           becomes available. Works fully with or without location permission.
 //
 //  Created by Etefworkie Melaku
 //
@@ -22,32 +23,36 @@ struct DashboardView: View {
     /// Provides live step count, flights climbed, and active calories.
     @EnvironmentObject var healthManager: HealthManager
 
-    /// Handles one-shot location capture for the walk's starting point.
+    /// Handles optional one-shot location capture for the walk's starting point.
     @EnvironmentObject var locationManager: LocationManager
 
     // MARK: - Constants
 
     /// Daily step goal displayed below the hero number.
-    /// Hard-coded for now; a settings screen can expose this to the user later.
     private let stepGoal = 12_000
 
-    /// UserDefaults key for persisting the last session "place – time" string.
+    /// UserDefaults key for persisting the most recent session string.
     private let lastSessionKey = "lastSession"
 
     // MARK: - Session state
 
-    /// Wall-clock time when the user tapped "Start Walk" this session.
-    /// Nil before any walk is started.
-    @State private var sessionStart: Date? = nil
+    /// The time the user tapped "Start Walk" this session. Used when the place
+    /// arrives asynchronously so the full string can be rebuilt with the same time.
+    @State private var sessionTime: Date? = nil
 
     /// True while the async location-capture Task is in progress.
     /// Used to disable the button and show "Locating…" feedback.
     @State private var isCapturing = false
 
+    /// The current session display string, updated in real time.
+    /// Format: "Walk started at 9:48 AM" or "Walk started at 9:48 AM – Toronto, ON".
+    /// Nil before any session is started this app launch.
+    @State private var currentSessionString: String? = nil
+
     // MARK: - Persisted state
 
-    /// Last saved session string, loaded from UserDefaults on appear.
-    /// Format: "City, Region – 2:34 PM". Nil if no session has ever been saved.
+    /// Most recent session string from UserDefaults. Shown when no session
+    /// is active this launch so returning users see their last walk.
     @State private var lastSession: String? = nil
 
     // MARK: - Body
@@ -68,18 +73,14 @@ struct DashboardView: View {
                         .contentTransition(.numericText())
                         .animation(.easeInOut(duration: 0.4), value: healthManager.todaySteps)
 
-                    // Goal caption gives context to the raw number.
                     Text("/ \(stepGoal.formatted()) goal")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
                 // MARK: Flights + Calories row
-                // Two supporting metrics share one row so neither takes too much
-                // vertical space on the small watch screen.
                 HStack(spacing: 16) {
 
-                    // Flights climbed
                     HStack(spacing: 4) {
                         Image(systemName: "figure.stairs")
                             .foregroundStyle(.orange)
@@ -88,7 +89,6 @@ struct DashboardView: View {
                             .fontWeight(.semibold)
                     }
 
-                    // Active calories — whole numbers are precise enough here.
                     HStack(spacing: 4) {
                         Image(systemName: "flame.fill")
                             .foregroundStyle(.red)
@@ -101,16 +101,11 @@ struct DashboardView: View {
                 Divider()
 
                 // MARK: Start Walk button
-                // Tapping captures the start time locally and then triggers the
-                // async location fetch. The button is disabled while locating
-                // so the user can't kick off a second capture by accident.
+                // Always works regardless of location permission.
+                // The session string is recorded immediately on tap; the place
+                // name is appended asynchronously if location becomes available.
                 Button {
-                    sessionStart = Date()   // record the wall-clock start time
-                    isCapturing = true
-                    Task {
-                        await locationManager.captureOrigin()
-                        isCapturing = false
-                    }
+                    startSession()
                 } label: {
                     Label(
                         isCapturing ? "Locating…" : "Start Walk",
@@ -123,31 +118,27 @@ struct DashboardView: View {
                 .tint(.green)
                 .disabled(isCapturing)
 
-                // MARK: Current session origin
-                // Only appears after startPlaceDescription is filled in this session.
-                // Text(_:style:) with .time shows "2:34 PM" and ticks live —
-                // useful for the user to see elapsed time from their walk start.
-                if !locationManager.startPlaceDescription.isEmpty,
-                   let start = sessionStart {
-                    VStack(spacing: 2) {
-                        Text(locationManager.startPlaceDescription)
+                // MARK: Session display
+                // Shows the active session string the moment the button is tapped.
+                // Updates in place when the place name arrives asynchronously.
+                // Falls back to the last persisted session when no session is active.
+                if let session = currentSessionString ?? lastSession {
+                    VStack(spacing: 3) {
+                        Text(session)
                             .font(.caption2)
                             .fontWeight(.medium)
-                        Text(start, style: .time)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        // Tiny hint shown only when location is explicitly denied
+                        // so the user understands why no place is attached.
+                        if locationManager.authorizationStatus == .denied
+                            || locationManager.authorizationStatus == .restricted {
+                            Text("Location off")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                     .transition(.opacity)
-                }
-
-                // MARK: Last session (UserDefaults)
-                // Shown every time the view appears, even after the app restarts,
-                // because the string is written to the persistent UserDefaults store.
-                if let last = lastSession {
-                    Text("Last walk: \(last)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
                 }
             }
             .padding(.horizontal, 8)
@@ -167,36 +158,69 @@ struct DashboardView: View {
         // MARK: - Lifecycle
 
         .onAppear {
-            // Read the persisted session string on every appearance.
-            // Returns nil if the key has never been written (first launch).
+            // Load the most recent persisted session so returning users always
+            // see their last walk, even across app relaunches.
             lastSession = UserDefaults.standard.string(forKey: lastSessionKey)
         }
-        // Watch for a successful location result so we can persist the session.
+        // When the place arrives asynchronously (after geocoding or after the
+        // user grants permission mid-session), rebuild the session string with
+        // the place appended and persist the updated version.
         .onChange(of: locationManager.startPlaceDescription) { _, newPlace in
-            // Ignore error strings and empty values — only save a real place.
-            guard !newPlace.isEmpty,
-                  !newPlace.hasPrefix("Location"),
-                  let start = sessionStart else { return }
-
-            // Build a short "City, Region – 2:34 PM" string for persistence.
-            let formatter = DateFormatter()
-            formatter.timeStyle = .short
-            let sessionString = "\(newPlace) – \(formatter.string(from: start))"
-
-            // Update the in-session display immediately so the user sees it.
-            lastSession = sessionString
-
-            // Persist to UserDefaults so the string survives app restarts.
-            // UserDefaults.standard is the app's own sandboxed key-value store;
-            // data written here remains until the app is deleted.
-            UserDefaults.standard.set(sessionString, forKey: lastSessionKey)
+            guard let place = newPlace, let time = sessionTime else { return }
+            let updated = buildSessionString(time: time, place: place)
+            currentSessionString = updated
+            persist(session: updated)
         }
+    }
+
+    // MARK: - Private helpers
+
+    /// Called on every "Start Walk" tap.
+    /// Records the start time immediately, persists a time-only session string,
+    /// then fires the async location task in the background.
+    private func startSession() {
+        let now = Date()
+        sessionTime = now
+        isCapturing = true
+
+        // Persist a time-only string right away so the user always gets feedback,
+        // regardless of whether location is available.
+        let initial = buildSessionString(time: now, place: nil)
+        currentSessionString = initial
+        persist(session: initial)
+
+        Task {
+            // captureOrigin() always returns cleanly — it never blocks the session.
+            // If it gets a place, the onChange(of: startPlaceDescription) above
+            // will update currentSessionString to the full "time – place" format.
+            await locationManager.captureOrigin()
+            isCapturing = false
+        }
+    }
+
+    /// Builds the session display string.
+    ///   • Without a place: "Walk started at 9:48 AM"
+    ///   • With a place:    "Walk started at 9:48 AM – Toronto, ON"
+    private func buildSessionString(time: Date, place: String?) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        let timeString = "Walk started at \(formatter.string(from: time))"
+        if let place {
+            return "\(timeString) – \(place)"
+        }
+        return timeString
+    }
+
+    /// Writes the session string to UserDefaults so it survives app restarts.
+    private func persist(session: String) {
+        lastSession = session
+        UserDefaults.standard.set(session, forKey: lastSessionKey)
     }
 }
 
 // MARK: - Previews
 
-#Preview("Dashboard – live data") {
+#Preview("Dashboard – no location") {
     let health = HealthManager()
     health.todaySteps = 7_243
     health.todayFlights = 5
