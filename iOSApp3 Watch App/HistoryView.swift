@@ -46,7 +46,14 @@ struct HistoryView: View {
     var body: some View {
         List {
 
-            Section("This Week") {
+            Section(header: HStack {
+                Text("This Week")
+                Spacer()
+                Image("steprecovery_sr_logo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
+            }) {
                 if isLoading {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if hasNoData {
@@ -90,15 +97,6 @@ struct HistoryView: View {
                 }
             }
         }
-        .overlay(alignment: .topLeading) {
-            Image("steprecovery_sr_logo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 20, height: 20)
-                .padding(.top, 6)
-                .padding(.leading, 6)
-        }
-
         // MARK: - Lifecycle
 
         .task {
