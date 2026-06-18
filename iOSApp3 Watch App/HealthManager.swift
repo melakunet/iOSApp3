@@ -175,4 +175,101 @@ final class HealthManager: ObservableObject {
             break
         }
     }
+
+    // MARK: - Weekly history
+
+    /// Fetches total steps and active-energy for the past 7 days using
+    /// HKStatisticsCollectionQuery with a 1-day interval.
+    /// Called from HistoryView's .task modifier. Returns (0, 0) on any error.
+    func weeklyTotals() async -> (steps: Int, activeCalories: Double) {
+        guard HKHealthStore.isHealthDataAvailable() else { return (0, 0.0) }
+
+        let calendar  = Calendar.current
+        let now       = Date()
+
+        // Anchor at midnight today so every 1-day bucket aligns with a
+        // calendar day in the device's local time zone.
+        let startOfToday = calendar.startOfDay(for: now)
+
+        // Go back exactly 7 days from midnight today.
+        guard let sevenDaysAgo = calendar.date(
+            byAdding: .day, value: -7, to: startOfToday
+        ) else { return (0, 0.0) }
+
+        // 1-day interval: each HKStatistics bucket covers one calendar day.
+        var interval   = DateComponents()
+        interval.day   = 1
+
+        // Predicate: only samples that started within the 7-day window.
+        let predicate  = HKQuery.predicateForSamples(
+            withStart: sevenDaysAgo,
+            end: now,
+            options: .strictStartDate
+        )
+
+        // Run both queries sequentially; each suspends until HealthKit replies.
+        let steps = await fetchWeeklySum(
+            for:       HKQuantityType(.stepCount),
+            interval:  interval,
+            anchor:    startOfToday,
+            predicate: predicate,
+            unit:      .count()
+        )
+        let calories = await fetchWeeklySum(
+            for:       HKQuantityType(.activeEnergyBurned),
+            interval:  interval,
+            anchor:    startOfToday,
+            predicate: predicate,
+            unit:      .kilocalorie()
+        )
+
+        return (Int(steps), calories)
+    }
+
+    /// Executes a one-shot HKStatisticsCollectionQuery for one quantity type
+    /// and returns the sum of all daily bucket values.
+    ///
+    /// HKQuery callbacks run on a HealthKit background thread.
+    /// We capture `store` as a local constant before entering the continuation
+    /// (same pattern used in setupObserver) so the callback closure never
+    /// crosses the @MainActor boundary to access instance state.
+    private func fetchWeeklySum(
+        for type:      HKQuantityType,
+        interval:      DateComponents,
+        anchor:        Date,
+        predicate:     NSPredicate,
+        unit:          HKUnit
+    ) async -> Double {
+
+        // Capture the store on the main actor before suspending.
+        let capturedStore = store
+
+        return await withCheckedContinuation { continuation in
+            let query = HKStatisticsCollectionQuery(
+                quantityType:            type,
+                quantitySamplePredicate: predicate,
+                options:                 .cumulativeSum,  // steps and calories are cumulative
+                anchorDate:              anchor,           // aligns buckets to calendar-day boundaries
+                intervalComponents:      interval          // one bucket per day
+            )
+
+            // initialResultsHandler fires once with all daily buckets populated.
+            query.initialResultsHandler = { _, results, error in
+                if let error {
+                    print("Weekly sum error (\(type.identifier)): \(error.localizedDescription)")
+                    continuation.resume(returning: 0.0)
+                    return
+                }
+
+                // Sum across all buckets; missing days contribute zero.
+                let total = results?.statistics().reduce(into: 0.0) { acc, stats in
+                    acc += stats.sumQuantity()?.doubleValue(for: unit) ?? 0.0
+                } ?? 0.0
+
+                continuation.resume(returning: total)
+            }
+
+            capturedStore.execute(query)
+        }
+    }
 }
