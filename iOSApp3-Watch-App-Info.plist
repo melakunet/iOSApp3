@@ -4,5 +4,7 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>StepRecovery records where your walk started so you can log the session.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>StepRecovery reads your steps, flights climbed, and active calories to track your daily activity.</string>
 </dict>
 </plist>

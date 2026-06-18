@@ -2,26 +2,17 @@
 //  HealthManager.swift
 //  iOSApp3 Watch App
 //
-//  Purpose: Manages all HealthKit data access for StepRecovery.
-//           Requests authorization, fetches today's step count,
-//           flights climbed, and active calories, and keeps those
-//           values up-to-date via observer queries.
-//
 //  Created by Etefworkie Melaku
 //
 
-import Combine       // Required for ObservableObject, @Published, and ObjectWillChangePublisher
+import Combine       // ObservableObject, @Published
 import Foundation
 import HealthKit
 
-// MARK: - Private helpers (file-scope, nonisolated)
+// MARK: - Private helpers
 
-/// Builds a predicate for HealthKit samples from midnight today to right now.
-/// Defined at file scope (not inside the @MainActor class) so it can safely
-/// be called from HealthKit background-thread callbacks without crossing
-/// the actor boundary.
+// File-scope so HK background callbacks can call this without crossing the actor boundary.
 private func makeTodayPredicate() -> NSPredicate {
-    // startOfDay gives us midnight in the device's local time zone.
     let startOfDay = Calendar.current.startOfDay(for: Date())
     return HKQuery.predicateForSamples(
         withStart: startOfDay,
@@ -32,42 +23,26 @@ private func makeTodayPredicate() -> NSPredicate {
 
 // MARK: - HealthManager
 
-/// Central class for reading HealthKit data.
-/// @MainActor ensures every @Published update happens on the main thread,
-/// which is required for driving SwiftUI views safely.
 @MainActor
 final class HealthManager: ObservableObject {
 
-    // MARK: - Shared HealthKit store
+    // MARK: - Store
 
-    /// One HKHealthStore per app is the Apple-recommended pattern.
     private let store = HKHealthStore()
 
     // MARK: - Private backing stores
 
-    /// Raw step count delivered by HealthKit, kept separate from todaySteps
-    /// so the DEBUG step bonus can be layered on top without being reset by
-    /// observer refreshes. In release builds this mirrors todaySteps exactly.
+    // Keeps raw HK steps separate so the DEBUG bonus survives observer refreshes.
     private var realSteps: Int = 0
 
     // MARK: - Published properties
 
-    /// Total step count for today (midnight → now). Stays 0 if no data.
-    /// In DEBUG builds this equals realSteps + debugStepBonus.
     @Published var todaySteps: Int = 0
-
-    /// Total flights climbed for today.
     @Published var todayFlights: Int = 0
-
-    /// Total active-energy burned today, in kilocalories.
     @Published var todayActiveCalories: Double = 0.0
 
-    /// True once the user has granted at least read permission.
-    @Published var isAuthorized: Bool = false
+    // MARK: - HealthKit types
 
-    // MARK: - HealthKit types we need
-
-    /// The three quantity types this app reads.
     private let readTypes: Set<HKQuantityType> = [
         HKQuantityType(.stepCount),
         HKQuantityType(.flightsClimbed),
@@ -76,46 +51,27 @@ final class HealthManager: ObservableObject {
 
     // MARK: - Authorization
 
-    /// Asks the user for HealthKit read permissions.
-    /// Must be called before any query is started.
-    /// Safe to call more than once — HealthKit shows the sheet only once.
     func requestAuthorization() async {
-        // HealthKit is not available on all devices (e.g. iPod touch).
-        guard HKHealthStore.isHealthDataAvailable() else {
-            print("HealthKit not available on this device.")
-            return
-        }
+        guard HKHealthStore.isHealthDataAvailable() else { return }
 
         do {
-            // Request read-only access; we never write health data.
             try await store.requestAuthorization(toShare: [], read: readTypes)
-            isAuthorized = true
-            // Start live queries as soon as we have permission.
             startTodayObservers()
         } catch {
-            // Authorization errors are non-fatal — values simply stay at 0.
             print("HealthKit authorization error: \(error.localizedDescription)")
         }
     }
 
     // MARK: - Debug step simulator
-    // DEBUG ONLY — remove before final submission.
+
     #if DEBUG
 
-    /// Extra steps added by tapping "+1,000 Steps" in the Dashboard.
-    /// HealthKit observer refreshes add on top of this bonus rather than
-    /// resetting it, because realSteps tracks the raw HealthKit value separately.
     @Published var debugStepBonus: Int = 0
 
-    /// Adds count simulated steps and immediately updates todaySteps and
-    /// todayActiveCalories so that all onChange paths fire exactly as they
-    /// would with real HealthKit data: motivation pop-ups on LandingView,
-    /// goal check and haptic in RecoveryCoachView, calorie row in DashboardView.
     func addDebugSteps(_ count: Int = 1_000) {
         debugStepBonus += count
         todaySteps = realSteps + debugStepBonus
-        // Scale calories using the same RecoveryCalculator formula as the
-        // Recovery Coach tab so both screens show consistent numbers.
+        // Keep calories consistent with the simulated total.
         todayActiveCalories = RecoveryCalculator.caloriesBurned(steps: todaySteps)
     }
 
@@ -123,8 +79,6 @@ final class HealthManager: ObservableObject {
 
     // MARK: - Observers
 
-    /// Sets up three pairs of queries (one statistics query + one observer query
-    /// per data type) so the published values update automatically all day.
     func startTodayObservers() {
         setupObserver(for: HKQuantityType(.stepCount),          unit: .count())
         setupObserver(for: HKQuantityType(.flightsClimbed),     unit: .count())
@@ -133,58 +87,35 @@ final class HealthManager: ObservableObject {
 
     // MARK: - Private helpers
 
-    /// Creates one statistics query (immediate fetch) and one observer query
-    /// (fires whenever new data arrives) for the given quantity type.
-    ///
-    /// HKQuery callbacks run on a HealthKit background thread, not the main actor.
-    /// We capture `store` as a local constant before the closure (HKHealthStore
-    /// is Sendable) and use the file-scope `makeTodayPredicate()` function so
-    /// no actor-isolated state is accessed from the background thread.
     private func setupObserver(for type: HKQuantityType, unit: HKUnit) {
 
-        // Capture the store locally so it is accessible inside the non-isolated closure.
+        // Captured locally so the closure doesn't cross the @MainActor boundary.
         let capturedStore = store
 
-        // --- 1. Immediate statistics query (gives us today's current total) ---
         let statsQuery = HKStatisticsQuery(
             quantityType: type,
             quantitySamplePredicate: makeTodayPredicate(),
-            options: .cumulativeSum           // steps, flights, and calories are cumulative
+            options: .cumulativeSum
         ) { [weak self] _, statistics, error in
-            if let error {
-                print("Stats query error (\(type.identifier)): \(error.localizedDescription)")
-                return
-            }
+            if let error { print("Stats query error (\(type.identifier)): \(error.localizedDescription)"); return }
             let value = statistics?.sumQuantity()?.doubleValue(for: unit) ?? 0
-            // Hop to the main actor to mutate @Published properties safely.
-            Task { @MainActor [weak self] in
-                self?.update(type: type, value: value)
-            }
+            Task { @MainActor [weak self] in self?.update(type: type, value: value) }
         }
         capturedStore.execute(statsQuery)
 
-        // --- 2. Observer query (wakes us up when new samples are saved) ---
-        let observerQuery = HKObserverQuery(
-            sampleType: type,
-            predicate: nil          // nil = watch all samples of this type
-        ) { [weak self] _, completionHandler, error in
+        let observerQuery = HKObserverQuery(sampleType: type, predicate: nil) { [weak self] _, completionHandler, error in
             if let error {
                 print("Observer query error (\(type.identifier)): \(error.localizedDescription)")
                 completionHandler()
                 return
             }
-            // Re-run a fresh statistics query to get the updated total.
-            // makeTodayPredicate() is file-scope and nonisolated — safe to call here.
             let refreshQuery = HKStatisticsQuery(
                 quantityType: type,
                 quantitySamplePredicate: makeTodayPredicate(),
                 options: .cumulativeSum
             ) { [weak self] _, statistics, _ in
                 let value = statistics?.sumQuantity()?.doubleValue(for: unit) ?? 0
-                Task { @MainActor [weak self] in
-                    self?.update(type: type, value: value)
-                }
-                // Tell HealthKit we finished processing this update.
+                Task { @MainActor [weak self] in self?.update(type: type, value: value) }
                 completionHandler()
             }
             capturedStore.execute(refreshQuery)
@@ -192,21 +123,14 @@ final class HealthManager: ObservableObject {
         capturedStore.execute(observerQuery)
     }
 
-    /// Routes a fresh value to the correct @Published property.
-    /// Called only from `Task { @MainActor in }` blocks above.
     private func update(type: HKQuantityType, value: Double) {
         switch type {
         case HKQuantityType(.stepCount):
-            // Store the raw HealthKit value in realSteps first so the DEBUG
-            // bonus can be added on top without being lost on the next refresh.
             realSteps = Int(value)
             todaySteps = realSteps
             #if DEBUG
-            // Layer the bonus back on after every HealthKit refresh so
-            // the simulator's step count survives observer callbacks.
             todaySteps += debugStepBonus
             if debugStepBonus > 0 {
-                // Keep calories consistent with the simulated total.
                 todayActiveCalories = RecoveryCalculator.caloriesBurned(steps: todaySteps)
             }
             #endif
@@ -214,8 +138,7 @@ final class HealthManager: ObservableObject {
             todayFlights = Int(value)
         case HKQuantityType(.activeEnergyBurned):
             #if DEBUG
-            // Skip HealthKit's calorie update while a debug bonus is active;
-            // addDebugSteps() already set a value consistent with simulated steps.
+            // Skip while a debug bonus is active; addDebugSteps() already set calories.
             if debugStepBonus == 0 { todayActiveCalories = value }
             #else
             todayActiveCalories = value
@@ -227,61 +150,40 @@ final class HealthManager: ObservableObject {
 
     // MARK: - Weekly history
 
-    /// Fetches total steps and active-energy for the past 7 days using
-    /// HKStatisticsCollectionQuery with a 1-day interval.
-    /// Called from HistoryView's .task modifier. Returns (0, 0) on any error.
     func weeklyTotals() async -> (steps: Int, activeCalories: Double) {
         guard HKHealthStore.isHealthDataAvailable() else { return (0, 0.0) }
 
-        let calendar  = Calendar.current
-        let now       = Date()
-
-        // Anchor at midnight today so every 1-day bucket aligns with a
-        // calendar day in the device's local time zone.
+        let calendar     = Calendar.current
+        let now          = Date()
         let startOfToday = calendar.startOfDay(for: now)
 
-        // Go back exactly 7 days from midnight today.
-        guard let sevenDaysAgo = calendar.date(
-            byAdding: .day, value: -7, to: startOfToday
-        ) else { return (0, 0.0) }
+        guard let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: startOfToday) else {
+            return (0, 0.0)
+        }
 
-        // 1-day interval: each HKStatistics bucket covers one calendar day.
-        var interval   = DateComponents()
-        interval.day   = 1
+        var interval = DateComponents()
+        interval.day = 1
 
-        // Predicate: only samples that started within the 7-day window.
-        let predicate  = HKQuery.predicateForSamples(
+        let predicate = HKQuery.predicateForSamples(
             withStart: sevenDaysAgo,
             end: now,
             options: .strictStartDate
         )
 
-        // Run both queries sequentially; each suspends until HealthKit replies.
         let steps = await fetchWeeklySum(
-            for:       HKQuantityType(.stepCount),
-            interval:  interval,
-            anchor:    startOfToday,
-            predicate: predicate,
-            unit:      .count()
+            for: HKQuantityType(.stepCount),
+            interval: interval, anchor: startOfToday,
+            predicate: predicate, unit: .count()
         )
         let calories = await fetchWeeklySum(
-            for:       HKQuantityType(.activeEnergyBurned),
-            interval:  interval,
-            anchor:    startOfToday,
-            predicate: predicate,
-            unit:      .kilocalorie()
+            for: HKQuantityType(.activeEnergyBurned),
+            interval: interval, anchor: startOfToday,
+            predicate: predicate, unit: .kilocalorie()
         )
 
         return (Int(steps), calories)
     }
 
-    /// Executes a one-shot HKStatisticsCollectionQuery for one quantity type
-    /// and returns the sum of all daily bucket values.
-    ///
-    /// HKQuery callbacks run on a HealthKit background thread.
-    /// We capture `store` as a local constant before entering the continuation
-    /// (same pattern used in setupObserver) so the callback closure never
-    /// crosses the @MainActor boundary to access instance state.
     private func fetchWeeklySum(
         for type:      HKQuantityType,
         interval:      DateComponents,
@@ -290,31 +192,26 @@ final class HealthManager: ObservableObject {
         unit:          HKUnit
     ) async -> Double {
 
-        // Capture the store on the main actor before suspending.
         let capturedStore = store
 
         return await withCheckedContinuation { continuation in
             let query = HKStatisticsCollectionQuery(
                 quantityType:            type,
                 quantitySamplePredicate: predicate,
-                options:                 .cumulativeSum,  // steps and calories are cumulative
-                anchorDate:              anchor,           // aligns buckets to calendar-day boundaries
-                intervalComponents:      interval          // one bucket per day
+                options:                 .cumulativeSum,
+                anchorDate:              anchor,
+                intervalComponents:      interval
             )
 
-            // initialResultsHandler fires once with all daily buckets populated.
             query.initialResultsHandler = { _, results, error in
                 if let error {
                     print("Weekly sum error (\(type.identifier)): \(error.localizedDescription)")
                     continuation.resume(returning: 0.0)
                     return
                 }
-
-                // Sum across all buckets; missing days contribute zero.
                 let total = results?.statistics().reduce(into: 0.0) { acc, stats in
                     acc += stats.sumQuantity()?.doubleValue(for: unit) ?? 0.0
                 } ?? 0.0
-
                 continuation.resume(returning: total)
             }
 
