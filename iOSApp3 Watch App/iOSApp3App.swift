@@ -26,15 +26,19 @@ struct iOSApp3_Watch_AppApp: App {
     /// Handles one-shot GPS capture and reverse-geocoding.
     @StateObject private var locationManager = LocationManager()
 
+    /// Manages the motivational pop-up messages on the landing screen.
+    @StateObject private var motivationManager = MotivationManager()
+
     // MARK: - Scene
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                // Inject managers into the environment so any child view
+            LandingView()
+                // Inject all managers into the environment so any child view
                 // can access them via @EnvironmentObject if needed later.
                 .environmentObject(healthManager)
                 .environmentObject(locationManager)
+                .environmentObject(motivationManager)
                 // Request HealthKit authorization as soon as the root view appears.
                 // Using .task so it runs asynchronously and doesn't block the UI.
                 .task {
