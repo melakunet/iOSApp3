@@ -55,13 +55,6 @@ struct LandingView: View {
             // MARK: Main content stack
             VStack(spacing: 8) {
 
-                // SR logo — small brand mark at the very top of the landing screen.
-                // Sized to 30×30 so it's recognisable without dominating the layout.
-                Image("steprecovery_sr_logo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 30, height: 30)
-
                 // Walking figure.
                 // The offset oscillates between -4 and +4 pts, mimicking a
                 // gentle bounce. repeatForever + autoreverses loops it endlessly.

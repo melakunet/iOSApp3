@@ -49,6 +49,16 @@ struct ContentView: View {
         // .verticalPage: pages scroll vertically (Digital Crown or swipe up/down).
         // Introduced in watchOS 10; the standard interaction on Apple Watch.
         .tabViewStyle(.verticalPage)
+        // SR logo pinned to the top-left corner on every tab.
+        // overlay keeps it above the tab content without shifting any layouts.
+        .overlay(alignment: .topLeading) {
+            Image("steprecovery_sr_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .padding(.top, 6)
+                .padding(.leading, 6)
+        }
     }
 }
 
