@@ -43,9 +43,17 @@ final class HealthManager: ObservableObject {
     /// One HKHealthStore per app is the Apple-recommended pattern.
     private let store = HKHealthStore()
 
+    // MARK: - Private backing stores
+
+    /// Raw step count delivered by HealthKit, kept separate from todaySteps
+    /// so the DEBUG step bonus can be layered on top without being reset by
+    /// observer refreshes. In release builds this mirrors todaySteps exactly.
+    private var realSteps: Int = 0
+
     // MARK: - Published properties
 
     /// Total step count for today (midnight → now). Stays 0 if no data.
+    /// In DEBUG builds this equals realSteps + debugStepBonus.
     @Published var todaySteps: Int = 0
 
     /// Total flights climbed for today.
@@ -89,6 +97,29 @@ final class HealthManager: ObservableObject {
             print("HealthKit authorization error: \(error.localizedDescription)")
         }
     }
+
+    // MARK: - Debug step simulator
+    // DEBUG ONLY — remove before final submission.
+    #if DEBUG
+
+    /// Extra steps added by tapping "+1,000 Steps" in the Dashboard.
+    /// HealthKit observer refreshes add on top of this bonus rather than
+    /// resetting it, because realSteps tracks the raw HealthKit value separately.
+    @Published var debugStepBonus: Int = 0
+
+    /// Adds count simulated steps and immediately updates todaySteps and
+    /// todayActiveCalories so that all onChange paths fire exactly as they
+    /// would with real HealthKit data: motivation pop-ups on LandingView,
+    /// goal check and haptic in RecoveryCoachView, calorie row in DashboardView.
+    func addDebugSteps(_ count: Int = 1_000) {
+        debugStepBonus += count
+        todaySteps = realSteps + debugStepBonus
+        // Scale calories using the same RecoveryCalculator formula as the
+        // Recovery Coach tab so both screens show consistent numbers.
+        todayActiveCalories = RecoveryCalculator.caloriesBurned(steps: todaySteps)
+    }
+
+    #endif
 
     // MARK: - Observers
 
@@ -166,11 +197,29 @@ final class HealthManager: ObservableObject {
     private func update(type: HKQuantityType, value: Double) {
         switch type {
         case HKQuantityType(.stepCount):
-            todaySteps = Int(value)
+            // Store the raw HealthKit value in realSteps first so the DEBUG
+            // bonus can be added on top without being lost on the next refresh.
+            realSteps = Int(value)
+            todaySteps = realSteps
+            #if DEBUG
+            // Layer the bonus back on after every HealthKit refresh so
+            // the simulator's step count survives observer callbacks.
+            todaySteps += debugStepBonus
+            if debugStepBonus > 0 {
+                // Keep calories consistent with the simulated total.
+                todayActiveCalories = RecoveryCalculator.caloriesBurned(steps: todaySteps)
+            }
+            #endif
         case HKQuantityType(.flightsClimbed):
             todayFlights = Int(value)
         case HKQuantityType(.activeEnergyBurned):
+            #if DEBUG
+            // Skip HealthKit's calorie update while a debug bonus is active;
+            // addDebugSteps() already set a value consistent with simulated steps.
+            if debugStepBonus == 0 { todayActiveCalories = value }
+            #else
             todayActiveCalories = value
+            #endif
         default:
             break
         }

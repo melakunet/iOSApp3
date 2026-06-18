@@ -140,6 +140,22 @@ struct DashboardView: View {
                     }
                     .transition(.opacity)
                 }
+
+                // MARK: Debug step simulator
+                // DEBUG ONLY — remove before final submission.
+                #if DEBUG
+                Divider()
+
+                Button {
+                    healthManager.addDebugSteps(1_000)
+                } label: {
+                    Label("+1,000 Steps (Debug)", systemImage: "plus.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                #endif
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
