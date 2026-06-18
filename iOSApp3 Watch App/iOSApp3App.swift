@@ -33,14 +33,15 @@ struct iOSApp3_Watch_AppApp: App {
 
     var body: some Scene {
         WindowGroup {
-            LandingView()
-                // Inject all managers into the environment so any child view
-                // can access them via @EnvironmentObject if needed later.
+            // ContentView is a TabView holding LandingView and DashboardView.
+            // Managers are injected once here and flow down to both tabs via
+            // the SwiftUI environment — no need to pass them again in TabView.
+            ContentView()
                 .environmentObject(healthManager)
                 .environmentObject(locationManager)
                 .environmentObject(motivationManager)
-                // Request HealthKit authorization as soon as the root view appears.
-                // Using .task so it runs asynchronously and doesn't block the UI.
+                // Request HealthKit authorization once, as soon as the app opens.
+                // .task is async and non-blocking so the UI renders immediately.
                 .task {
                     await healthManager.requestAuthorization()
                 }
