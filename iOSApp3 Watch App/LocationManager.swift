@@ -9,25 +9,23 @@
 //  Created by Etefworkie Melaku
 //
 
-import Combine
+import Combine       // Required for ObservableObject and @Published
 import Foundation
 import CoreLocation
+import MapKit        // Required for MKReverseGeocodingRequest (replaces CLGeocoder)
 
 // MARK: - LocationManager
 
 /// Handles one-shot location capture and reverse geocoding.
 /// @MainActor ensures all @Published mutations happen on the main thread.
-/// Uses CLLocationManagerDelegate callbacks bridged to async/await via a
-/// CheckedContinuation so callers can simply use `await captureOrigin()`.
 /// CLLocationManager delivers delegate callbacks on the main thread by default,
-/// so accessing the continuation from delegate methods is safe.
+/// so accessing the async continuation from delegate methods is safe.
 @MainActor
 final class LocationManager: NSObject, ObservableObject {
 
-    // MARK: - Core Location objects
+    // MARK: - Core Location
 
     private let locationManager = CLLocationManager()
-    private let geocoder = CLGeocoder()
 
     // MARK: - Published properties
 
@@ -35,13 +33,13 @@ final class LocationManager: NSObject, ObservableObject {
     /// Empty string until captureOrigin() succeeds.
     @Published var startPlaceDescription: String = ""
 
-    /// Raw coordinate of the origin fix. Nil until a fix is obtained.
+    /// Raw coordinate of the origin fix. Nil until a valid fix is obtained.
     @Published var startCoordinate: CLLocationCoordinate2D? = nil
 
     // MARK: - Private state
 
-    /// Continuation that bridges the delegate callback to async/await.
-    /// We hold at most one continuation at a time (one-shot pattern).
+    /// Bridges the CLLocationManager delegate callback to async/await.
+    /// We hold at most one continuation at a time — the one-shot pattern.
     private var locationContinuation: CheckedContinuation<CLLocation, Error>?
 
     // MARK: - Initializer
@@ -60,69 +58,74 @@ final class LocationManager: NSObject, ObservableObject {
     /// takes a single location fix and reverse-geocodes it.
     /// Call this when the user taps "Start Walk".
     func captureOrigin() async {
-        // Request permission only if we haven't asked before.
         let status = locationManager.authorizationStatus
         if status == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
-            // The actual fix will be triggered after the delegate fires
-            // (locationManagerDidChangeAuthorization). Returning here prevents
-            // a race condition where requestLocation() fires before the OS
-            // grants permission, which would immediately fail.
+            // Return early to avoid a race where requestLocation() fires before
+            // the OS grants permission and immediately fails with an error.
+            // locationManagerDidChangeAuthorization will call fetchAndGeocode()
+            // once the user responds to the prompt.
             return
         }
 
-        // If the user denied access, show a descriptive fallback string.
         guard status == .authorizedWhenInUse || status == .authorizedAlways else {
             startPlaceDescription = "Location access denied"
             return
         }
 
-        // Fetch the one-shot fix via the async bridge.
         await fetchAndGeocode()
     }
 
     // MARK: - Private helpers
 
-    /// Requests a single location fix using async/await and then
-    /// reverse-geocodes the result into a short place string.
+    /// Requests one GPS fix and reverse-geocodes the coordinate into a
+    /// short human-readable string (e.g. "Toronto, ON").
+    ///
+    /// Uses MKReverseGeocodingRequest — the watchOS 26+ replacement for the
+    /// deprecated CLGeocoder — bridged to async/await via CheckedContinuation.
     private func fetchAndGeocode() async {
         do {
-            // Suspend here until the delegate delivers a location (or an error).
+            // Suspend until the CLLocationManager delegate delivers a fix.
+            // requestLocation() triggers exactly one update, then stops.
             let location = try await withCheckedThrowingContinuation { continuation in
-                // Store the continuation so the delegate can resume it.
                 locationContinuation = continuation
-                // This triggers one fix and then stops; no continuous updates.
                 locationManager.requestLocation()
             }
 
-            // Store the raw coordinate for any caller that needs it.
             startCoordinate = location.coordinate
 
-            // Reverse-geocode: converts lat/lon to a list of placemarks.
-            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            // MKReverseGeocodingRequest replaces the deprecated CLGeocoder.
+            // The failable init returns nil only for an invalid coordinate.
+            guard let request = MKReverseGeocodingRequest(location: location) else {
+                startPlaceDescription = "Location unavailable"
+                return
+            }
 
-            if let placemark = placemarks.first {
-                // Build a short "City, Province/State" string from the placemark.
-                // administrativeArea is the province/state (e.g. "ON").
-                let city   = placemark.locality ?? placemark.subLocality ?? ""
-                let region = placemark.administrativeArea ?? ""
-
-                if city.isEmpty && region.isEmpty {
-                    // Fall back to country name if city/region both missing.
-                    startPlaceDescription = placemark.country ?? "Unknown location"
-                } else if city.isEmpty {
-                    startPlaceDescription = region
-                } else if region.isEmpty {
-                    startPlaceDescription = city
-                } else {
-                    startPlaceDescription = "\(city), \(region)"
+            // Bridge the completion-handler API to async/await so the calling
+            // code remains linear and easy to read.
+            let mapItems: [MKMapItem]? = await withCheckedContinuation { continuation in
+                request.getMapItems { items, error in
+                    if let error {
+                        print("Reverse geocoding error: \(error.localizedDescription)")
+                    }
+                    // Resume with whatever arrived; nil on error → fallback below.
+                    continuation.resume(returning: items)
                 }
+            }
+
+            // addressRepresentations replaces the deprecated MKPlacemark.placemark on watchOS 26+.
+            // cityWithContext(.automatic) returns a "City, Region" style string automatically
+            // (e.g. "Toronto, ON"), handling disambiguation without manual string building.
+            if let representations = mapItems?.first?.addressRepresentations {
+                startPlaceDescription = representations.cityWithContext(.automatic)
+                    ?? representations.cityName
+                    ?? "Unknown location"
             } else {
                 startPlaceDescription = "Unknown location"
             }
 
         } catch {
-            // Location or geocoding failed — set a safe fallback, never crash.
+            // Location or geocoding failed — show a safe fallback, never crash.
             print("LocationManager error: \(error.localizedDescription)")
             startPlaceDescription = "Location unavailable"
         }
@@ -131,34 +134,36 @@ final class LocationManager: NSObject, ObservableObject {
 
 // MARK: - CLLocationManagerDelegate
 
-extension LocationManager: CLLocationManagerDelegate {
+// @preconcurrency tells Swift that CLLocationManagerDelegate predates strict
+// concurrency, so the conformance to this nonisolated Objective-C protocol from
+// a @MainActor class is intentional and safe (CLLocationManager delivers its
+// callbacks on the main thread by default).
+extension LocationManager: @preconcurrency CLLocationManagerDelegate {
 
     /// Called when the user responds to the permission prompt.
-    /// If permission was just granted, kick off the actual location fix.
+    /// If access was just granted, kick off the actual location fix.
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         if status == .authorizedWhenInUse || status == .authorizedAlways {
-            // Permission just granted — go ahead and capture the origin.
             Task { await fetchAndGeocode() }
         } else if status == .denied || status == .restricted {
             startPlaceDescription = "Location access denied"
         }
-        // .notDetermined means the sheet is still visible; do nothing yet.
+        // .notDetermined: the sheet is still visible — nothing to do yet.
     }
 
-    /// Delivers the one-shot location fix back to the async continuation.
+    /// Delivers the one-shot GPS fix to the waiting async continuation.
     func locationManager(_ manager: CLLocationManager,
                          didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        // Resume the suspended continuation with the first valid fix.
         locationContinuation?.resume(returning: location)
-        locationContinuation = nil  // Prevent double-resume
+        locationContinuation = nil  // nil prevents a double-resume
     }
 
-    /// Delivers location errors back to the async continuation.
+    /// Delivers a location error to the waiting async continuation.
     func locationManager(_ manager: CLLocationManager,
                          didFailWithError error: Error) {
         locationContinuation?.resume(throwing: error)
-        locationContinuation = nil  // Prevent double-resume
+        locationContinuation = nil  // nil prevents a double-resume
     }
 }
