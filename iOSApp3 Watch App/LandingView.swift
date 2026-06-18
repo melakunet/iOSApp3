@@ -38,12 +38,11 @@ struct LandingView: View {
 
     // MARK: - Computed properties
 
-    /// Rough protein recovery target in grams.
-    /// Formula: 1 g per 25 kcal burned, clamped to a sensible 15–25 g range.
-    /// A more accurate calculator will replace this in a later phase.
+    /// Protein recovery target in grams.
+    /// Delegated to RecoveryCalculator so this number stays in sync with
+    /// the Recovery Coach tab — both screens show the same recommendation.
     private var proteinTarget: Int {
-        let raw = (healthManager.todayActiveCalories / 25).rounded()
-        return Int(min(25, max(15, raw)))
+        RecoveryCalculator.proteinGrams(forCalories: healthManager.todayActiveCalories)
     }
 
     // MARK: - Body

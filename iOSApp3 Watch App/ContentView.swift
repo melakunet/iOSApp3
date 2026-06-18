@@ -14,11 +14,12 @@ import SwiftUI
 
 // MARK: - ContentView
 
-/// Root view that hosts the two main tabs.
+/// Root view that hosts the three main tabs.
 ///
 /// Navigation structure:
-///   Tab 1 (top)    → LandingView  – walking animation, calorie summary, pop-ups
-///   Tab 2 (bottom) → DashboardView – step hero, flights, calories, Start Walk
+///   Tab 1 (top)    → LandingView       – walking animation, calorie summary, pop-ups
+///   Tab 2          → DashboardView     – step hero, flights, calories, Start Walk
+///   Tab 3 (bottom) → RecoveryCoachView – progress bar, protein guide, recovery tips
 ///
 /// .verticalPage stacks tabs top-to-bottom so the user scrolls or spins the
 /// Digital Crown to move between screens — the standard watchOS 10+ pattern.
@@ -29,7 +30,7 @@ struct ContentView: View {
     var body: some View {
         // Each direct child of TabView becomes one swipeable page.
         // EnvironmentObject values injected by iOSApp3App flow down automatically
-        // to LandingView and DashboardView without re-passing them here.
+        // to all tabs without re-passing them here.
         TabView {
 
             // Tab 1 — motivational landing with animated walking figure.
@@ -37,6 +38,9 @@ struct ContentView: View {
 
             // Tab 2 — live fitness metrics and walk-start capture.
             DashboardView()
+
+            // Tab 3 — recovery coach: goal progress, protein range, tips, notification.
+            RecoveryCoachView()
         }
         // .verticalPage: pages scroll vertically (Digital Crown or swipe up/down).
         // Introduced in watchOS 10; the standard interaction on Apple Watch.
